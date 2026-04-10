@@ -4,7 +4,26 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LEXIS v4 — Gestión de Despacho Jurídico</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// Cargar Supabase de forma asíncrona
+window._supaReady = false;
+function loadSupabase() {
+  return new Promise((resolve) => {
+    if (window.supabase) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
+    s.onload = () => { window._supaReady = true; resolve(); };
+    s.onerror = () => {
+      // Fallback a unpkg si jsdelivr falla
+      const s2 = document.createElement('script');
+      s2.src = 'https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.min.js';
+      s2.onload = () => { window._supaReady = true; resolve(); };
+      document.head.appendChild(s2);
+    };
+    document.head.appendChild(s);
+  });
+}
+</script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600;700&family=DM+Sans:wght@400;500;600;700;800&display=swap');
 :root{--bg:#07111E;--panel:#0E1F35;--panel2:#152940;--gold:#C9A84C;--gold2:#E8C96A;--text:#D8E8F8;--muted:#6A8AAA;--dim:#3A5A7A;--border:#1A3550;--danger:#D94F4F;--success:#4CAF7A;--warn:#E8A030;--info:#3A8FD9;--purple:#8B5CF6;}
@@ -130,7 +149,7 @@ select option{background:var(--panel);}textarea{resize:vertical;}
       <input type="password" id="login-pass" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()">
     </div>
     <button class="login-btn" onclick="doLogin()">Ingresar al despacho</button>
-    <div id="login-msg"></div>
+    <div id="login-msg"><div class="login-loading">⏳ Conectando con el servidor...</div></div>
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
       <div style="color:var(--muted);font-size:12px;margin-bottom:8px;">¿Primera vez? Cree su cuenta:</div>
       <button class="btn btn-s" style="width:100%;font-size:12px;" onclick="doRegister()">Crear cuenta nueva</button>
@@ -166,9 +185,43 @@ select option{background:var(--panel);}textarea{resize:vertical;}
 // ═══ SUPABASE CONFIG ═══════════════════════════════════════════════
 const SUPA_URL = 'https://haiuqlvmhnzolcccncwa.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhhaXVxbHZtaG56b2xjY2NuY3dhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU3OTM4NDksImV4cCI6MjA5MTM2OTg0OX0.2F6xwhWwXehY47Pdjs5NWnVgR5pC0ATZmU2QRjxklDA';
-const sb = supabase.createClient(SUPA_URL, SUPA_KEY);
+let sb = null;
 
-// ═══ UTILS ═══════════════════════════════════════════════════════
+// Mostrar login inmediatamente
+document.getElementById('login-screen').style.display = 'flex';
+document.getElementById('app').style.display = 'none';
+
+// Cargar Supabase en segundo plano
+loadSupabase().then(() => {
+  sb = supabase.createClient(SUPA_URL, SUPA_KEY);
+  // Verificar si ya hay sesión activa
+  sb.auth.getSession().then(({ data: { session } }) => {
+    if (session) {
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('app').style.display = 'flex';
+      document.getElementById('app').style.flexDirection = 'column';
+      loadAllData().then(() => initApp());
+    } else {
+      // Login listo para usar
+      document.getElementById('login-msg').innerHTML = '';
+    }
+  });
+  // Escuchar cambios de sesión
+  sb.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'SIGNED_IN' && session) {
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('app').style.display = 'flex';
+      document.getElementById('app').style.flexDirection = 'column';
+      await loadAllData();
+      initApp();
+    } else if (event === 'SIGNED_OUT') {
+      document.getElementById('login-screen').style.display = 'flex';
+      document.getElementById('app').style.display = 'none';
+    }
+  });
+}).catch(() => {
+  document.getElementById('login-msg').innerHTML = '<div class="login-err">Error de conexión. Verifique su internet e intente de nuevo.</div>';
+});
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2);
 const today=()=>new Date().toISOString().slice(0,10);
 const fmtDate=d=>{if(!d)return'—';const[y,m,da]=d.split('-');return`${da}/${m}/${y}`;};
@@ -197,6 +250,7 @@ window.doLogin=async function(){
   const pass=document.getElementById('login-pass').value;
   const msg=document.getElementById('login-msg');
   if(!email||!pass){msg.innerHTML='<div class="login-err">Complete todos los campos</div>';return;}
+  if(!sb){msg.innerHTML='<div class="login-loading">Conectando... espere un momento e intente de nuevo.</div>';return;}
   msg.innerHTML='<div class="login-loading">Ingresando...</div>';
   const{error}=await sb.auth.signInWithPassword({email,password:pass});
   if(error){msg.innerHTML=`<div class="login-err">Credenciales incorrectas. Verifique su correo y contraseña.</div>`;}
@@ -206,34 +260,19 @@ window.doRegister=async function(){
   const email=document.getElementById('login-email').value.trim();
   const pass=document.getElementById('login-pass').value;
   const msg=document.getElementById('login-msg');
-  if(!email||!pass){msg.innerHTML='<div class="login-err">Complete correo y contraseña para crear la cuenta</div>';return;}
+  if(!email||!pass){msg.innerHTML='<div class="login-err">Complete correo y contraseña</div>';return;}
   if(pass.length<6){msg.innerHTML='<div class="login-err">La contraseña debe tener al menos 6 caracteres</div>';return;}
+  if(!sb){msg.innerHTML='<div class="login-loading">Conectando... espere un momento.</div>';return;}
   msg.innerHTML='<div class="login-loading">Creando cuenta...</div>';
   const{error}=await sb.auth.signUp({email,password:pass});
   if(error){msg.innerHTML=`<div class="login-err">${error.message}</div>`;}
-  else{msg.innerHTML='<div class="login-loading">✓ Cuenta creada. Verifique su correo si es necesario e ingrese.</div>';}
+  else{msg.innerHTML='<div class="login-loading">✓ Cuenta creada. Ahora ingrese con su correo y contraseña.</div>';}
 };
 
 window.doLogout=async function(){
   if(!confirm('¿Cerrar sesión?'))return;
   await sb.auth.signOut();
-  document.getElementById('app').style.display='none';
-  document.getElementById('login-screen').style.display='flex';
-  document.getElementById('login-pass').value='';
 };
-
-sb.auth.onAuthStateChange(async(event,session)=>{
-  if(session){
-    document.getElementById('login-screen').style.display='none';
-    document.getElementById('app').style.display='flex';
-    document.getElementById('app').style.flexDirection='column';
-    await loadAllData();
-    initApp();
-  }else{
-    document.getElementById('login-screen').style.display='flex';
-    document.getElementById('app').style.display='none';
-  }
-});
 
 // ═══ CARGA DE DATOS ════════════════════════════════════════════════
 async function loadAllData(){
